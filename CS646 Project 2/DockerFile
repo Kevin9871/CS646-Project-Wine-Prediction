@@ -1,0 +1,33 @@
+FROM openjdk:8-jdk
+
+# Set working directory
+WORKDIR /usr/src/app
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    python3-distutils \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install pip and pyspark
+#RUN curl https://bootstrap.pypa.io/pip/2.7/get-pip.py -o get-pip.py \
+ #   && python3 get-pip.py \
+  #  && pip install pyspark \
+   # && rm get-pip.py
+RUN python3 -m pip install --upgrade pip \
+    && python3 -m pip install pyspark==3.5.1
+
+# Install additional Python packages
+RUN pip install --no-cache-dir numpy boto3
+
+# Install Apache Spark
+ENV SPARK_VERSION=3.1.2
+ENV HADOOP_VERSION=3.2
+ENV SPARK_HOME=/home/ubuntu/spark-3.5.0-bin-hadoop3
+ENV PATH=$PATH:$SPARK_HOME/bin
+
+COPY . .
+
+# Set default command
+CMD ["python3", "training.py"]
