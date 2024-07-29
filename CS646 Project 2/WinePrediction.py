@@ -1,48 +1,70 @@
-import boto3
 from pyspark.sql import SparkSession
-from pyspark.ml.feature import VectorAssembler
+from pyspark.sql.functions import col
+from pyspark.ml.feature import VectorAssembler, Normalizer
 from pyspark.ml.classification import LogisticRegression
 from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
 from pyspark.ml import Pipeline
 
 # Initialize Spark session
-spark = SparkSession.builder \
-.appName("WineQualityPrediction") \
-.getOrCreate()
+spark = SparkSession.builder.appName("WineQualityPrediction").getOrCreate()
 
-# Initialize boto3 client
-s3 = boto3.client('s3')
+# Load data
+training_data = spark.read.format('csv').options(header='true', inferSchema='true', sep=';').load('/data/TrainingDataset.csv')
+validation_data = spark.read.format('csv').options(header='true', inferSchema='true', sep=';').load('/data/ValidationDataset.csv')
 
-# Define S3 bucket and file names
-bucket_name = 'wine-set'
+# Print data to verify
+print("Data loaded into Spark.")
+training_data.show(5)
+validation_data.show(5)
 
-# Download files from S3
-s3.download_file(bucket_name,'/tmp/TrainingDataset.csv')
-s3.download_file(bucket_name,'/tmp/ValidationDataset.csv')
+# Remove quotations from column names
+for column in training_data.columns:
+    training_data = training_data.withColumnRenamed(column, column.replace('"', ''))
+    validation_data = validation_data.withColumnRenamed(column, column.replace('"', ''))
 
-# Load the data from the local filesystem
-TrainingData = spark.read.csv("/tmp/TrainingDataset.csv", header=True, inferSchema=True)
-ValidationData = spark.read.csv("/tmp/ValidationDataset.csv", header=True, inferSchema=True)
+# Rename 'quality' column to 'label'
+training_data = training_data.withColumnRenamed('quality', 'label')
+validation_data = validation_data.withColumnRenamed('quality', 'label')
 
-# Feature transformation
-featureColumns = TrainingData.columns[:-1]
-assembler = VectorAssembler(inputCols=featureColumns, outputCol="features")
 
-TrainingData = assembler.transform(TrainingData)
-ValidationData = assembler.transform(ValidationData)
+# Define feature columns
+feature_cols = [
+    "fixed acidity", "volatile acidity", "citric acid", "residual sugar",
+    "chlorides", "free sulfur dioxide", "total sulfur dioxide", "density",
+    "pH", "sulphates", "alcohol"
+]
 
-# Model training
-LogisticReg = LogisticRegression(labelCol="quality", featuresCol="features", maxIter=10)
-pipeline = Pipeline(stages=[assembler, LogisticReg])
+# Assemble feature columns into a single vector
+assembler = VectorAssembler(inputCols=feature_cols, outputCol="inputFeatures")
 
-model = pipeline.fit(TrainingData)
+# Normalize features
+scaler = Normalizer(inputCol="inputFeatures", outputCol="features")
 
-# Model evaluation
-prediction = model.transform(ValidationData)
-evaluator = MulticlassClassificationEvaluator(labelCol="quality", predictionCol="prediction", metricName="f1")
-accuracy = evaluator.evaluate(prediction)
-print(f"F1 Score: {accuracy}")
+# Initialize Logistic Regression
+lr = LogisticRegression(labelCol="label", featuresCol="features")
 
-# Save the model locally
-model_path = "/tmp/Model"
-model.write().overwrite().save(model_path)
+# Create a pipeline
+pipeline = Pipeline(stages=[assembler, scaler, lr])
+
+# Build parameter grid for CrossValidator
+param_grid = ParamGridBuilder().build()
+
+# Initialize evaluator
+evaluator = MulticlassClassificationEvaluator(labelCol="label", metricName="f1")
+
+# Initialize CrossValidator
+crossval = CrossValidator(estimator=pipeline,
+                          estimatorParamMaps=param_grid,
+                          evaluator=evaluator,
+                          numFolds=3)
+
+# Fit model
+cv_model = crossval.fit(training_data)
+
+# Evaluate model
+f1_score = evaluator.evaluate(cv_model.transform(validation_data))
+print(f"F1 Score for Our Model: {f1_score}")
+
+# Stop Spark session
+spark.stop()
